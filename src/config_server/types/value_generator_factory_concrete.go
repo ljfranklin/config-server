@@ -21,6 +21,8 @@ func (vgc ValueGeneratorConcrete) GetGenerator(valueType string) (ValueGenerator
 	case "certificate":
 		x509Loader := NewX509Loader()
 		return NewCertificateGenerator(vgc.config, x509Loader), nil
+	case "gcp_service_account":
+		return NewServiceAccountGenerator(vgc.config), nil
 	default:
 		return nil, errors.Errorf("Unsupported value type: %s", valueType)
 	}

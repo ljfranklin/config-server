@@ -6,24 +6,32 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"fmt"
-	"github.com/cloudfoundry/bosh-utils/errors"
 	"regexp"
+
+	"github.com/cloudfoundry/bosh-utils/errors"
 )
 
 type requestHandler struct {
 	store                 store.Store
 	valueGeneratorFactory types.ValueGeneratorFactory
+	valueRevokerFactory   types.ValueRevokerFactory
 }
 
-func NewRequestHandler(store store.Store, valueGeneratorFactory types.ValueGeneratorFactory) (http.Handler, error) {
+func NewRequestHandler(
+	store store.Store,
+	valueGeneratorFactory types.ValueGeneratorFactory,
+	valueRevokerFactory types.ValueRevokerFactory,
+) (http.Handler, error) {
 	if store == nil {
 		return nil, errors.Error("Data store must be set")
 	}
 	return requestHandler{
 		store: store,
 		valueGeneratorFactory: valueGeneratorFactory,
+		valueRevokerFactory:   valueRevokerFactory,
 	}, nil
 }
 
@@ -111,7 +119,27 @@ func (handler requestHandler) handlePut(resWriter http.ResponseWriter, req *http
 		return
 	}
 
-	configuration, err := handler.saveToStore(name, value)
+	if isNameValid, nameError := isValidName(name); isNameValid == false {
+		http.Error(resWriter, nameError.Error(), http.StatusBadRequest)
+		return
+	}
+
+	values, err := handler.store.GetByName(name)
+	if err != nil {
+		http.Error(resWriter, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var configType string
+	if len(values) == 0 {
+		http.Error(resWriter, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		return
+	} else {
+		configs := store.Configurations(values)
+		configType = configs[0].Type
+	}
+
+	configuration, err := handler.saveToStore(name, configType, nil, value)
 
 	if err != nil {
 		http.Error(resWriter, err.Error(), http.StatusInternalServerError)
@@ -127,7 +155,7 @@ func (handler requestHandler) handlePost(resWriter http.ResponseWriter, req *htt
 		return
 	}
 
-	name, generatorType, parameters, err := readPostRequest(req)
+	name, generatorType, expiresIn, parameters, err := readPostRequest(req)
 
 	if err != nil {
 		http.Error(resWriter, err.Error(), http.StatusBadRequest)
@@ -161,7 +189,14 @@ func (handler requestHandler) handlePost(resWriter http.ResponseWriter, req *htt
 			return
 		}
 
-		configuration, err := handler.saveToStore(name, generatedValue)
+		var expiresAt *time.Time
+		if expiresIn > 0 {
+			add := time.Duration(expiresIn) * time.Second
+			tmp := time.Now().UTC().Add(add)
+			expiresAt = &tmp
+		}
+
+		configuration, err := handler.saveToStore(name, generatorType, expiresAt, generatedValue)
 		if err != nil {
 			http.Error(resWriter, err.Error(), http.StatusInternalServerError)
 			return
@@ -179,6 +214,42 @@ func (handler requestHandler) handleDelete(resWriter http.ResponseWriter, req *h
 		return
 	}
 
+	values, err := handler.store.GetByName(name)
+	if err != nil {
+		http.Error(resWriter, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var storedConfig store.Configuration
+	if len(values) == 0 {
+		http.Error(resWriter, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		return
+	} else {
+		configStr, err := values[0].StringifiedJSON()
+		if err != nil {
+			http.Error(resWriter, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			return
+		}
+
+		err = json.Unmarshal([]byte(configStr), &storedConfig)
+		if err != nil {
+			http.Error(resWriter, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			return
+		}
+	}
+
+	revoker, err := handler.valueRevokerFactory.GetRevoker(storedConfig.Type)
+	if err != nil {
+		http.Error(resWriter, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	err = revoker.Revoke(storedConfig.Value)
+	if err != nil {
+		http.Error(resWriter, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	deleted, err := handler.store.Delete(name)
 
 	if err == nil {
@@ -192,7 +263,7 @@ func (handler requestHandler) handleDelete(resWriter http.ResponseWriter, req *h
 	}
 }
 
-func (handler requestHandler) saveToStore(name string, value interface{}) (store.Configuration, error) {
+func (handler requestHandler) saveToStore(name string, typ string, expiresAt *time.Time, value interface{}) (store.Configuration, error) {
 	configValue := make(map[string]interface{})
 	configValue["value"] = value
 
@@ -202,7 +273,7 @@ func (handler requestHandler) saveToStore(name string, value interface{}) (store
 		return store.Configuration{}, err
 	}
 
-	id, err := handler.store.Put(name, string(bytes))
+	id, err := handler.store.Put(name, typ, expiresAt, string(bytes))
 	if err != nil {
 		return store.Configuration{}, err
 	}
@@ -244,24 +315,29 @@ func readPutRequest(req *http.Request) (string, interface{}, error) {
 	return name, value, nil
 }
 
-func readPostRequest(req *http.Request) (string, string, interface{}, error) {
+func readPostRequest(req *http.Request) (string, string, int64, interface{}, error) {
 
 	jsonMap, err := readJSONBody(req)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", 0, nil, err
 	}
 
 	name, err := getStringValueFromJSONBody(jsonMap, "name")
 	if err != nil {
-		return name, "", nil, err
+		return name, "", 0, nil, err
 	}
 
 	generatorType, err := getStringValueFromJSONBody(jsonMap, "type")
 	if err != nil {
-		return name, generatorType, nil, err
+		return name, generatorType, 0, nil, err
 	}
 
-	return name, generatorType, jsonMap["parameters"], nil
+	expiresIn, err := getIntValueFromJSONBody(jsonMap, "expires_in")
+	if err != nil {
+		expiresIn = 0
+	}
+
+	return name, generatorType, expiresIn, jsonMap["parameters"], nil
 }
 
 func getStringValueFromJSONBody(jsonMap map[string]interface{}, keyName string) (string, error) {
@@ -276,6 +352,21 @@ func getStringValueFromJSONBody(jsonMap map[string]interface{}, keyName string) 
 		return value.(string), nil
 	default:
 		return "", errors.Error(fmt.Sprintf("JSON request body key '%s' must be of type string", keyName))
+	}
+}
+
+func getIntValueFromJSONBody(jsonMap map[string]interface{}, keyName string) (int64, error) {
+
+	value, keyExists := jsonMap[keyName]
+	if !keyExists {
+		return 0, errors.Error(fmt.Sprintf("JSON request body should contain the key '%s'", keyName))
+	}
+
+	switch value.(type) {
+	case float64:
+		return int64(value.(float64)), nil
+	default:
+		return 0, errors.Error(fmt.Sprintf("JSON request body key '%s' must be of type int", keyName))
 	}
 }
 

@@ -6,6 +6,10 @@ import (
 	"strings"
 
 	"github.com/cloudfoundry/bosh-utils/errors"
+	"golang.org/x/net/context"
+	"golang.org/x/oauth2/google"
+	cloudresourcemanager "google.golang.org/api/cloudresourcemanager/v1"
+	iam "google.golang.org/api/iam/v1"
 )
 
 type ServerConfig struct {
@@ -15,8 +19,11 @@ type ServerConfig struct {
 	JwtVerificationKeyPath string `json:"jwt_verification_key_path"`
 	CACertificateFilePath  string `json:"ca_certificate_file_path"`
 	CAPrivateKeyFilePath   string `json:"ca_private_key_file_path"`
+	GCPProjectID           string `json:"gcp_project_id"`
 	Store                  string
 	Database               DBConfig
+	GCPServiceAccounts     *iam.ProjectsServiceAccountsService
+	GCPProjectManager      *cloudresourcemanager.ProjectsService
 }
 
 type DBConnectionConfig struct {
@@ -58,6 +65,22 @@ func ParseConfig(filename string) (ServerConfig, error) {
 	if (&config.Database != nil) && (&config.Database.Adapter != nil) {
 		config.Database.Adapter = strings.ToLower(config.Database.Adapter)
 	}
+
+	client, err := google.DefaultClient(context.Background(), iam.CloudPlatformScope)
+	if err != nil {
+		return config, err
+	}
+	service, err := iam.New(client)
+	if err != nil {
+		return config, err
+	}
+	crm, err := cloudresourcemanager.New(client)
+	if err != nil {
+		return config, err
+	}
+
+	config.GCPServiceAccounts = service.Projects.ServiceAccounts
+	config.GCPProjectManager = crm.Projects
 
 	return config, nil
 }

@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"strconv"
+	"time"
 )
 
 type postgresStore struct {
@@ -13,7 +14,7 @@ func NewPostgresStore(dbProvider DbProvider) Store {
 	return postgresStore{dbProvider}
 }
 
-func (ps postgresStore) Put(name string, value string) (string, error) {
+func (ps postgresStore) Put(name string, _ string, _ *time.Time, value string) (string, error) {
 
 	db, err := ps.dbProvider.Db()
 	if err != nil {
@@ -102,4 +103,8 @@ func (ps postgresStore) Delete(name string) (int, error) {
 	}
 
 	return 0, err
+}
+
+func (ps postgresStore) GetExpired() (Configurations, error) {
+	return Configurations{}, nil
 }

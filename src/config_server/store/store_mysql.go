@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"strconv"
+	"time"
 )
 
 type mysqlStore struct {
@@ -13,7 +14,7 @@ func NewMysqlStore(dbProvider DbProvider) Store {
 	return mysqlStore{dbProvider}
 }
 
-func (ms mysqlStore) Put(name string, value string) (string, error) {
+func (ms mysqlStore) Put(name string, _ string, _ *time.Time, value string) (string, error) {
 
 	db, err := ms.dbProvider.Db()
 	if err != nil {
@@ -98,4 +99,8 @@ func (ms mysqlStore) Delete(name string) (int, error) {
 	}
 
 	return 0, err
+}
+
+func (ms mysqlStore) GetExpired() (Configurations, error) {
+	return Configurations{}, nil
 }

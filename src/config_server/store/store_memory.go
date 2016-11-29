@@ -3,6 +3,7 @@ package store
 import (
 	"sort"
 	"strconv"
+	"time"
 )
 
 type MemoryStore struct {
@@ -16,11 +17,13 @@ func NewMemoryStore() MemoryStore {
 	return MemoryStore{db: make(map[string]Configuration)}
 }
 
-func (store MemoryStore) Put(name string, value string) (string, error) {
+func (store MemoryStore) Put(name string, typ string, expiresAt *time.Time, value string) (string, error) {
 	config := Configuration{
-		Name:  name,
-		Value: value,
-		ID:    strconv.Itoa(dbCounter),
+		Name:      name,
+		Value:     value,
+		Type:      typ,
+		ExpiresAt: expiresAt,
+		ID:        strconv.Itoa(dbCounter),
 	}
 	dbCounter++
 
@@ -57,4 +60,16 @@ func (store MemoryStore) Delete(name string) (int, error) {
 	}
 
 	return deletedCount, nil
+}
+
+func (store MemoryStore) GetExpired() (Configurations, error) {
+	expired := Configurations{}
+	now := time.Now().UTC()
+	for _, config := range store.db {
+		if config.ExpiresAt != nil && now.After(*config.ExpiresAt) {
+			expired = append(expired, config)
+		}
+	}
+
+	return expired, nil
 }
